@@ -5,14 +5,16 @@
 # One of "docker", "hassio"
 ARG BASEIMGTYPE=docker
 
+# This must be updated if the version or the build artifact changes.
+ARG CRYPTOGRAPHY_VERSION="43.0.0"
 
 # https://github.com/hassio-addons/addon-debian-base/releases
 FROM ghcr.io/hassio-addons/debian-base:7.2.0 AS base-hassio
 # https://hub.docker.com/_/debian?tab=tags&page=1&name=bookworm
 FROM debian:12.2-slim AS base-docker
 
-FROM base-${BASEIMGTYPE} AS base
 
+FROM base-${BASEIMGTYPE} AS base-packages
 
 ARG TARGETARCH
 ARG TARGETVARIANT
@@ -53,7 +55,8 @@ RUN \
                 libffi-dev=3.4.4-1 \
                 libopenjp2-7=2.5.0-2 \
                 libtiff6=4.5.0-6+deb12u1 \
-                cargo=0.66.0+ds1-1 \
+                # Is it really needed on the final armv7 image?
+                # cargo=0.66.0+ds1-1 \
                 pkg-config=1.8.1-1 \
                 gcc-arm-linux-gnueabihf=4:12.2.0-3 \
         ) \
@@ -77,6 +80,45 @@ RUN \
     if [ "$TARGETARCH$TARGETVARIANT" = "armv7" ]; then \
         ln -s /lib/arm-linux-gnueabihf/ld-linux-armhf.so.3 /lib/ld-linux.so.3; \
     fi
+
+
+FROM base-packages AS pip-build
+
+ARG CRYPTOGRAPHY_VERSION
+
+RUN mkdir /wheels
+
+RUN <<EOT
+    if [ "$TARGETARCH$TARGETVARIANT" = "armv7" ]; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- \
+                --default-host armv7-unknown-linux-gnueabihf \
+                --default-toolchain stable \
+                --profile minimal \
+                -y
+    fi
+EOT
+
+RUN <<EOT
+    if [ "$TARGETARCH$TARGETVARIANT" = "armv7" ]; then
+        . "/root/.cargo/env"
+        export PIP_EXTRA_INDEX_URL="https://www.piwheels.org/simple"
+        pip3 wheel \
+            --no-binary "cryptography" --wheel-dir /wheels \
+            cryptography==${CRYPTOGRAPHY_VERSION}
+    fi
+EOT
+
+
+FROM base-packages AS base
+ARG CRYPTOGRAPHY_VERSION
+
+RUN --mount=type=bind,from=pip-build,source=/wheels,target=/wheels <<EOT
+    if [ "$TARGETARCH$TARGETVARIANT" = "armv7" ]; then
+        export PIP_EXTRA_INDEX_URL="https://www.piwheels.org/simple"
+        pip3 install --break-system-packages /wheels/cryptography-${CRYPTOGRAPHY_VERSION}-*.whl
+    fi
+EOT
 
 RUN \
     # Ubuntu python3-pip is missing wheel
